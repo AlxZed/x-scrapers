@@ -45,7 +45,9 @@ def build_paper_context(arxiv_id: str, tweet_text: str):
                 words[-1000:]) if len(words) > 2000 else " ".join(
                     words[-len(words) // 2:])
 
-            print(f'Fecthed {len(first_section)+len(last_section)} words')
+            print(
+                f'Fetched {len(first_section)+len(last_section)} characters from HTML'
+            )
 
         else:
             print(

@@ -22,11 +22,16 @@ FETCH_TIMEOUT = 25
 SOCIALDATA_BEARER = os.getenv("SOCIALDATA_BEARER", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 
-MIN_FAVES = 1000
+MIN_FAVES = 100
 WITHIN_TIME = "7d"
 
 client = MongoClient(os.environ["MONGO_URI_HEADLINE"])
 DB = client["web_signals"]
+
+# Arxiv_data database connection
+arxiv_client = MongoClient(os.environ.get("MONGO_URI"))
+ARXIV_DB = arxiv_client["Arxiv_data"]
+PAPERS_COLL = ARXIV_DB["Arxiv_papers"]
 
 TWITTER = DB.twitter
 FAILURES = DB.arxiv_failures
@@ -70,6 +75,24 @@ def _print_tweet_summary(username: str, likes: int, tweet_url: str,
     print(
         f"✅ @{username} | {likes} Likes | {_hours_ago(tweet_time)} | {tweet_url}"
     )
+
+
+def update_metrics_in_arxiv_db(arxiv_id: str, like_count: int,
+                               reply_count: int, retweet_count: int):
+    """Update metrics in Arxiv_data.Arxiv_papers for matching arxiv_id."""
+    try:
+        PAPERS_COLL.update_one({"arxiv_id": arxiv_id}, {
+            "$set": {
+                "like_count": like_count,
+                "reply_count": reply_count,
+                "retweet_count": retweet_count,
+                "metrics_updated_at": datetime.utcnow()
+            }
+        })
+        print(f"📊 Updated metrics in Arxiv_papers for {arxiv_id}")
+    except Exception as e:
+        print(
+            f"⚠️ Failed to update metrics in Arxiv_papers for {arxiv_id}: {e}")
 
 
 def fetch_thread(tweet_id: int | str):
@@ -224,32 +247,81 @@ def fetch_and_store_arxiv_threads():
                 total_skipped += 1
                 continue
 
-            ids = {t.get("id") for t in base_tweets}
-            doc = {
-                "tweet_id": int(root["id"]),
-                "username": "alphasignalai",
-                "text": text,
-                "like_count": root.get("favorite_count", 0),
-                "reply_count": root.get("reply_count", 0),
-                "retweet_count": root.get("retweet_count", 0),
-                "tweet_time": tweet_time,
-                "tweet_url": f"https://twitter.com/{user}/status/{root['id']}",
-                "arxiv_id": arxiv_id,
-                "arxiv_url": arxiv_url,
-                "is_thread": len(base_tweets) > 1,
-                "thread_tweets": list(ids),
-                "processing_status": "unprocessed",
-                "scrape_date": datetime.utcnow(),
-                "ai_related": True,
-                "source": "arxiv",
+            # ✅ Build base document
+            author = user
+            root_id = root["id"]
+            full_text = text
+            images = [
+                m.get("media_url_https", "") for t in base_tweets
+                for m in (t.get("entities", {}).get("media", []) or [])
+            ]
+
+            parent = user  # or other logic if needed
+            tweet_time = parse_tweet_time(root.get("tweet_created_at"))
+            # ✅ Collect all tweet IDs in the thread
+            thread_ids = [int(t["id"]) for t in base_tweets if t.get("id")]
+
+            like_count = root.get("favorite_count", 0)
+            reply_count = root.get("reply_count", 0)
+            retweet_count = root.get("retweet_count", 0)
+
+            base_doc = {
+                "username":
+                "alphasignalai",
+                "tweet_id":
+                int(root_id),
+                "text":
+                full_text,
+                "like_count":
+                like_count,
+                "reply_count":
+                reply_count,
+                "retweet_count":
+                retweet_count,
+                "in_reply_to":
+                False,
+                "tweet_time":
+                tweet_time,
+                "name": (root.get("user") or {}).get("name"),
+                "tweet_type":
+                "arxiv",
+                "profile_image_url_https":
+                (root.get("user") or {}).get("profile_image_url_https"),
+                "tweet_url":
+                f"https://twitter.com/{author}/status/{root_id}",
+                "image_urls":
+                images,
+                "is_thread":
+                len(base_tweets) > 1,
+                "thread_tweets":
+                thread_ids,
+                "root_tweet":
+                True,
+                "processing_status":
+                "unprocessed",
+                "potential_username":
+                parent,
+                "arxiv_id":
+                arxiv_id,
+                "arxiv_url":
+                arxiv_url,
+                "scrape_date":
+                datetime.utcnow(),
+                "source":
+                "X",
             }
 
             ops.append(
                 UpdateOne(
-                    {"tweet_id": doc["tweet_id"]},
-                    {"$setOnInsert": doc},
+                    {"tweet_id": base_doc["tweet_id"]},
+                    {"$setOnInsert": base_doc},
                     upsert=True,
                 ))
+
+            # 📊 Update metrics in Arxiv_papers collection
+            update_metrics_in_arxiv_db(arxiv_id, like_count, reply_count,
+                                       retweet_count)
+
             print(f"🧠 Stored AI-relevant arXiv thread: {arxiv_id}")
 
         if ops:
@@ -323,13 +395,18 @@ def process_one_arxiv_thread(tweet_doc: dict):
                              tweet_doc.get("like_count", 0),
                              tweet_doc["tweet_url"], tweet_doc["tweet_time"])
 
+        # 📊 Update metrics in Arxiv_papers when processing completes
+        update_metrics_in_arxiv_db(arxiv_id, tweet_doc.get("like_count", 0),
+                                   tweet_doc.get("reply_count", 0),
+                                   tweet_doc.get("retweet_count", 0))
+
         TWITTER.update_one(
             {"tweet_id": tid},
             {
                 "$set": {
                     "processing_status": "processed",
                     "arxiv_meta": meta,
-                    "arxiv_categories": categories,
+                    "ai_categories": categories,
                     "updated_at": datetime.utcnow(),
                 }
             },
