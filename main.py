@@ -12,7 +12,6 @@ from anthropic import Anthropic
 
 from arxiv_fetch import fetch_arxiv_metadata
 from categorize import categorize_paper_with_claude
-from write_article import insert_article_to_mongo
 
 # =========================
 # Config
@@ -380,16 +379,6 @@ def process_one_arxiv_thread(tweet_doc: dict):
                                                   CLAUDE)
 
         print(f"📰 Writing article for {arxiv_id}")
-        insert_article_to_mongo(
-            arxiv_id=arxiv_id,
-            title=meta.get("title", ""),
-            tweet_text=text,
-            categories=categories,
-            meta=meta,
-            tweet_id=tid,
-            tweet_url=tweet_doc["tweet_url"],
-            author=tweet_doc["username"],
-        )
 
         _print_tweet_summary(tweet_doc["username"],
                              tweet_doc.get("like_count", 0),
