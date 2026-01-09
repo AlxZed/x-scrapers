@@ -21,7 +21,7 @@ FETCH_TIMEOUT = 25
 SOCIALDATA_BEARER = os.getenv("SOCIALDATA_BEARER", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 
-MIN_FAVES = 20
+MIN_FAVES = 25
 WITHIN_TIME = "7d"
 
 client = MongoClient(os.environ["MONGO_URI_HEADLINE"])
@@ -271,8 +271,9 @@ def fetch_and_store_arxiv_threads():
             retweet_count = root.get("retweet_count", 0)
 
             base_doc = {
+                "user_id": (root.get("user") or {}).get("id"),
                 "username":
-                "alphasignalai",
+                author,  # ← Use actual tweet author
                 "tweet_id":
                 root_id,  # ← Already a string
                 "text":
@@ -283,6 +284,12 @@ def fetch_and_store_arxiv_threads():
                 reply_count,
                 "retweet_count":
                 retweet_count,
+                "quote_count":
+                root.get("quote_count"),
+                "views_count":
+                root.get("views_count"),
+                "bookmark_count":
+                root.get("bookmark_count"),
                 "in_reply_to":
                 False,
                 "tweet_time":
@@ -312,10 +319,16 @@ def fetch_and_store_arxiv_threads():
                 arxiv_url,
                 "scrape_date":
                 datetime.utcnow(),
+                "first_seen_at":
+                datetime.utcnow(),
+                "updated_at":
+                datetime.utcnow(),
                 "source":
                 "X",
                 "article_written":
                 False,
+                "show_in_feed":
+                True,
             }
 
             # ✅ Insert immediately instead of batching
