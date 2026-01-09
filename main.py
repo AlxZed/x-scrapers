@@ -21,7 +21,7 @@ FETCH_TIMEOUT = 25
 SOCIALDATA_BEARER = os.getenv("SOCIALDATA_BEARER", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 
-MIN_FAVES = 25
+MIN_FAVES = 10
 WITHIN_TIME = "7d"
 
 client = MongoClient(os.environ["MONGO_URI_HEADLINE"])
