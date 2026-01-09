@@ -21,19 +21,14 @@ FETCH_TIMEOUT = 25
 SOCIALDATA_BEARER = os.getenv("SOCIALDATA_BEARER", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 
-MIN_FAVES = 100
+MIN_FAVES = 20
 WITHIN_TIME = "7d"
 
 client = MongoClient(os.environ["MONGO_URI_HEADLINE"])
-DB = client["web_signals"]
 
-# Arxiv_data database connection
-arxiv_client = MongoClient(os.environ.get("MONGO_URI"))
-ARXIV_DB = arxiv_client["Arxiv_data"]
-PAPERS_COLL = ARXIV_DB["Arxiv_papers"]
-
-TWITTER = DB.twitter
-FAILURES = DB.arxiv_failures
+# Use sources database for both collections
+PAPERS = client.get_database("sources").arxiv
+TWEETS = client.get_database("sources").twitter_arxiv
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -76,22 +71,34 @@ def _print_tweet_summary(username: str, likes: int, tweet_url: str,
     )
 
 
-def update_metrics_in_arxiv_db(arxiv_id: str, like_count: int,
-                               reply_count: int, retweet_count: int):
-    """Update metrics in Arxiv_data.Arxiv_papers for matching arxiv_id."""
+def update_metrics_in_arxiv_db(
+    arxiv_id: str,
+    like_count: int,
+    reply_count: int,
+    retweet_count: int,
+    tweet_id: int | str,
+    tweet_url: str,
+):
     try:
-        PAPERS_COLL.update_one({"arxiv_id": arxiv_id}, {
-            "$set": {
-                "like_count": like_count,
-                "reply_count": reply_count,
-                "retweet_count": retweet_count,
-                "metrics_updated_at": datetime.utcnow()
-            }
-        })
-        print(f"📊 Updated metrics in Arxiv_papers for {arxiv_id}")
+        PAPERS.update_one(
+            {"arxiv_id": arxiv_id},
+            {
+                "$set": {
+                    "like_count": like_count,
+                    "reply_count": reply_count,
+                    "retweet_count": retweet_count,
+                    "tweet_id": str(tweet_id),  # ← REQUIRED
+                    "tweet_url": tweet_url,  # ← REQUIRED
+                    "metrics_updated_at": datetime.utcnow(),
+                }
+            },
+            upsert=True,
+        )
+        print(f"📊 Updated metrics in sources.arxiv for {arxiv_id}")
     except Exception as e:
         print(
-            f"⚠️ Failed to update metrics in Arxiv_papers for {arxiv_id}: {e}")
+            f"⚠️ Failed to update metrics in sources.arxiv for {arxiv_id}: {e}"
+        )
 
 
 def fetch_thread(tweet_id: int | str):
@@ -194,7 +201,6 @@ def fetch_and_store_arxiv_threads():
             print("No tweets found in this page.")
             break
 
-        ops = []
         for tweet in tweets:
             user = (tweet.get("user") or {}).get("screen_name", "")
             if not user:
@@ -248,7 +254,7 @@ def fetch_and_store_arxiv_threads():
 
             # ✅ Build base document
             author = user
-            root_id = root["id"]
+            root_id = str(root["id"])  # ← Convert to string immediately
             full_text = text
             images = [
                 m.get("media_url_https", "") for t in base_tweets
@@ -257,8 +263,8 @@ def fetch_and_store_arxiv_threads():
 
             parent = user  # or other logic if needed
             tweet_time = parse_tweet_time(root.get("tweet_created_at"))
-            # ✅ Collect all tweet IDs in the thread
-            thread_ids = [int(t["id"]) for t in base_tweets if t.get("id")]
+            # ✅ Collect all tweet IDs in the thread (as strings)
+            thread_ids = [str(t["id"]) for t in base_tweets if t.get("id")]
 
             like_count = root.get("favorite_count", 0)
             reply_count = root.get("reply_count", 0)
@@ -268,7 +274,7 @@ def fetch_and_store_arxiv_threads():
                 "username":
                 "alphasignalai",
                 "tweet_id":
-                int(root_id),
+                root_id,  # ← Already a string
                 "text":
                 full_text,
                 "like_count":
@@ -293,7 +299,7 @@ def fetch_and_store_arxiv_threads():
                 "is_thread":
                 len(base_tweets) > 1,
                 "thread_tweets":
-                thread_ids,
+                thread_ids,  # ← All IDs are strings
                 "root_tweet":
                 True,
                 "processing_status":
@@ -308,25 +314,35 @@ def fetch_and_store_arxiv_threads():
                 datetime.utcnow(),
                 "source":
                 "X",
+                "article_written":
+                False,
             }
 
-            ops.append(
-                UpdateOne(
+            # ✅ Insert immediately instead of batching
+            try:
+                result = TWEETS.update_one(
                     {"tweet_id": base_doc["tweet_id"]},
                     {"$setOnInsert": base_doc},
                     upsert=True,
-                ))
+                )
+                if result.upserted_id or result.modified_count > 0:
+                    total_inserted += 1
+                    print(f"📥 Inserted AI-relevant arXiv thread: {arxiv_id}")
+                else:
+                    print(f"⏭️ Thread {arxiv_id} already exists, skipping")
+            except Exception as e:
+                print(f"❌ Failed to insert {arxiv_id}: {e}")
+                continue
 
-            # 📊 Update metrics in Arxiv_papers collection
-            update_metrics_in_arxiv_db(arxiv_id, like_count, reply_count,
-                                       retweet_count)
-
-            print(f"🧠 Stored AI-relevant arXiv thread: {arxiv_id}")
-
-        if ops:
-            TWITTER.bulk_write(ops, ordered=False)
-            total_inserted += len(ops)
-            print(f"📥 Inserted {len(ops)} AI threads this page")
+            # 📊 Update metrics in sources.arxiv collection
+            update_metrics_in_arxiv_db(
+                arxiv_id,
+                like_count,
+                reply_count,
+                retweet_count,
+                root_id,
+                f"https://twitter.com/{author}/status/{root_id}",
+            )
 
         next_cursor = data.get("next_cursor")
         if not next_cursor:
@@ -344,16 +360,17 @@ def fetch_and_store_arxiv_threads():
 
 def process_unprocessed_arxiv_threads():
     q = {"processing_status": "unprocessed"}
-    docs = list(TWITTER.find(q))
+    docs = list(TWEETS.find(q))
     if not docs:
         print("No unprocessed arXiv threads.")
         return
-    print(f"⚙️ Processing {len(docs)} arXiv threads...")
+    print(f"⚙️ Processing {len(docs)} arXiv threads sequentially...\n")
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        for _ in as_completed(
-            [ex.submit(process_one_arxiv_thread, d) for d in docs]):
-            pass
+    for i, doc in enumerate(docs, 1):
+        print(f"--- Processing {i}/{len(docs)} ---")
+        process_one_arxiv_thread(doc)
+        print()  # Add blank line between tweets
+
     print("✅ Completed processing stage.")
 
 
@@ -367,10 +384,10 @@ def process_one_arxiv_thread(tweet_doc: dict):
         meta = fetch_arxiv_metadata(arxiv_id)
         if not meta:
             print(f"⚠️ No metadata found for {arxiv_id}")
-            TWITTER.update_one({"tweet_id": tid},
-                               {"$set": {
-                                   "processing_status": "no_metadata"
-                               }})
+            TWEETS.update_one({"tweet_id": tid},
+                              {"$set": {
+                                  "processing_status": "no_metadata"
+                              }})
             return
 
         print(f"🏷️ Categorizing {arxiv_id}")
@@ -384,12 +401,17 @@ def process_one_arxiv_thread(tweet_doc: dict):
                              tweet_doc.get("like_count", 0),
                              tweet_doc["tweet_url"], tweet_doc["tweet_time"])
 
-        # 📊 Update metrics in Arxiv_papers when processing completes
-        update_metrics_in_arxiv_db(arxiv_id, tweet_doc.get("like_count", 0),
-                                   tweet_doc.get("reply_count", 0),
-                                   tweet_doc.get("retweet_count", 0))
+        # 📊 Update metrics in sources.arxiv when processing completes
+        update_metrics_in_arxiv_db(
+            arxiv_id,
+            tweet_doc.get("like_count", 0),
+            tweet_doc.get("reply_count", 0),
+            tweet_doc.get("retweet_count", 0),
+            tweet_doc["tweet_id"],
+            tweet_doc["tweet_url"],
+        )
 
-        TWITTER.update_one(
+        TWEETS.update_one(
             {"tweet_id": tid},
             {
                 "$set": {
@@ -403,7 +425,7 @@ def process_one_arxiv_thread(tweet_doc: dict):
 
     except Exception as e:
         print(f"❌ Failed {tweet_doc.get('tweet_id')}: {type(e).__name__} {e}")
-        TWITTER.update_one(
+        TWEETS.update_one(
             {"tweet_id": tweet_doc.get("tweet_id")},
             {"$set": {
                 "processing_status": f"failed:{type(e).__name__}"
