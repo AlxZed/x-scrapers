@@ -31,7 +31,7 @@ from tweet_utils import (
 
 MIN_FAVES = DEFAULT_MIN_FAVES
 WITHIN_TIME = DEFAULT_WITHIN_TIME
-CATEGORIZE = True  # Set to False to skip categorization
+CATEGORIZE = False  # Set to False to skip categorization
 
 HUGGINGFACE_DATASET_RE = re.compile(
     r"huggingface\.co/datasets/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)")
