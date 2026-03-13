@@ -3,46 +3,6 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def is_beneficial_for_ai_field(repo, anthropic_client):
-  try:
-    title = repo.get("title", "") or ""
-    description = repo.get("description", "") or ""
-    readme_excerpt = repo.get("readme_excerpt", "") or ""
-    if not any([title, description, readme_excerpt]):
-      return False
-
-    prompt = f"""
-You are an expert AI research analyst.
-
-Determine if the following GitHub repository is beneficial for:
-- ML engineers
-- Data scientists
-- Developers working on AI
-- AI researchers
-
-Only answer with one word: YES or NO.
-
-Title: {title}
-Description: {description}
-README excerpt: {readme_excerpt}
-"""
-
-    msg = anthropic_client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=2,
-        temperature=0,
-        messages=[{
-            "role": "user",
-            "content": prompt
-        }],
-    )
-    answer = (msg.content[0].text or "").strip().upper()
-    return answer == "YES"
-  except Exception as e:
-    print(f"⚠️ Relevance check failed for {repo.get('title', 'unknown')}: {e}")
-    return False
-
-
 def fetch_arxiv_metadata(arxiv_id: str):
   try:
     url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
