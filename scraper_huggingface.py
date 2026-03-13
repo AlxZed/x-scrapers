@@ -31,12 +31,15 @@ from tweet_utils import (
 
 MIN_FAVES = DEFAULT_MIN_FAVES
 WITHIN_TIME = DEFAULT_WITHIN_TIME
+CATEGORIZE = True  # Set to False to skip categorization
 
 HUGGINGFACE_DATASET_RE = re.compile(
     r"huggingface\.co/datasets/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)")
 HUGGINGFACE_MODEL_RE = re.compile(
     r"huggingface\.co/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)")
-BLOCKED_PREFIXES = {"spaces", "docs", "papers", "blog", "datasets"}
+BLOCKED_PREFIXES = {
+    "spaces", "docs", "papers", "blog", "datasets", "collections"
+}
 
 # ── Helpers ───────────────────────────────────
 
@@ -150,7 +153,7 @@ def run():
     inserted = skipped = 0
 
     print(
-        f"\n🔎 HuggingFace scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME})"
+        f"\n🔎 HuggingFace scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME}, categorize={CATEGORIZE})"
     )
 
     for tweet in iter_search_tweets(SESSION, base_url):
@@ -243,7 +246,7 @@ def run():
                 print(f"❌ Metrics update failed: {e}")
             continue
 
-        # ── New model: full fetch + categorize ──
+        # ── New model: full fetch + optionally categorize ──
         print(f"✨ New {resource_type}: {model_id}")
 
         details = _fetch_resource_details(username, model_name, resource_type)
@@ -254,42 +257,66 @@ def run():
         readme = _fetch_readme(model_id, resource_type)
         image_url = get_og_image(model_url)
 
-        cat_result = categorize(text=readme or details.get("description", ""),
-                                advanced_category=True)
+        if CATEGORIZE:
+            cat_result = categorize(text=readme
+                                    or details.get("description", ""),
+                                    advanced_category=True)
+        else:
+            cat_result = {"regular_categories": [], "advanced_categories": []}
+            print("   ⏭️ Categorization skipped")
 
         model_std = _model_std_scores(details)
 
-        tweet_doc = build_base_tweet_doc(root,
-                                         base_tweets,
-                                         text=text,
-                                         tweet_type="huggingface",
-                                         source="X Huggingface",
-                                         std_scores=tweet_std,
-                                         extra_fields={
-                                             **hf_extra, "huggingface_details":
-                                             details,
-                                             "ai_categories": cat_result
-                                         })
+        tweet_doc = build_base_tweet_doc(
+            root,
+            base_tweets,
+            text=text,
+            tweet_type="huggingface",
+            source="X Huggingface",
+            std_scores=tweet_std,
+            extra_fields={
+                **hf_extra,
+                "huggingface_details": details,
+                "regular_categories": cat_result.get("regular_categories", []),
+                "advanced_categories": cat_result.get("advanced_categories",
+                                                      []),
+            })
 
         if not upsert_tweet(TWEETS_HUGGINGFACE, tweet_doc):
             continue
 
         hf_doc = {
             **details,
-            "ai_categories": cat_result,
-            "image_url": image_url,
-            "readme_content": readme,
-            "tweet_like_count": like_count,
-            "tweet_reply_count": root.get("reply_count", 0),
-            "tweet_retweet_count": retweet_count,
-            "tweet_id": root_id,
-            "tweet_url": f"https://twitter.com/{user}/status/{root_id}",
-            "tweet_username": user,
-            "potential_username": user,
-            "source": "X Huggingface",
-            "scrape_date": datetime.utcnow(),
-            "first_seen_at": datetime.utcnow(),
-            "tweet_metrics_updated_at": datetime.utcnow(),
+            "regular_categories":
+            cat_result.get("regular_categories", []),
+            "advanced_categories":
+            cat_result.get("advanced_categories", []),
+            "image_url":
+            image_url,
+            "readme_content":
+            readme,
+            "tweet_like_count":
+            like_count,
+            "tweet_reply_count":
+            root.get("reply_count", 0),
+            "tweet_retweet_count":
+            retweet_count,
+            "tweet_id":
+            root_id,
+            "tweet_url":
+            f"https://twitter.com/{user}/status/{root_id}",
+            "tweet_username":
+            user,
+            "potential_username":
+            user,
+            "source":
+            "X Huggingface",
+            "scrape_date":
+            datetime.utcnow(),
+            "first_seen_at":
+            datetime.utcnow(),
+            "tweet_metrics_updated_at":
+            datetime.utcnow(),
             **model_std,
         }
 

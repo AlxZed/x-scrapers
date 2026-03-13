@@ -29,6 +29,7 @@ from tweet_utils import (
 
 MIN_FAVES = DEFAULT_MIN_FAVES
 WITHIN_TIME = DEFAULT_WITHIN_TIME
+CATEGORIZE = False  # Set to False to skip categorization
 
 GITHUB_RE = re.compile(r"github\.com/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)")
 
@@ -123,7 +124,9 @@ def run():
     )
     inserted = skipped = 0
 
-    print(f"\n🔎 GitHub scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME})")
+    print(
+        f"\n🔎 GitHub scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME}, categorize={CATEGORIZE})"
+    )
 
     for tweet in iter_search_tweets(SESSION, base_url):
         user = (tweet.get("user") or {}).get("screen_name", "")
@@ -234,20 +237,25 @@ def run():
                 print(f"❌ Update failed: {e}")
             continue
 
-        # ── New repo: categorize + insert ──
+        # ── New repo: optionally categorize + insert ──
         print(f"✨ New repo: {owner}/{repo}")
-        cat_result = categorize(text=f"{text}\n\n{readme}",
-                                advanced_category=True,
-                                url=repo_url)
 
-        regular = cat_result.get("regular_categories", [])
-        advanced = cat_result.get("advanced_categories", [])
+        if CATEGORIZE:
+            cat_result = categorize(text=f"{text}\n\n{readme}",
+                                    advanced_category=True,
+                                    url=repo_url)
+            regular = cat_result.get("regular_categories", [])
+            advanced = cat_result.get("advanced_categories", [])
 
-        if regular is None:
-            skipped += 1
-            continue
+            if regular is None:
+                skipped += 1
+                continue
 
-        print(f"   Regular: {regular}  Advanced: {advanced}")
+            print(f"   Regular: {regular}  Advanced: {advanced}")
+        else:
+            regular = []
+            advanced = []
+            print("   ⏭️ Categorization skipped")
 
         tweet_doc = build_base_tweet_doc(root,
                                          base_tweets,

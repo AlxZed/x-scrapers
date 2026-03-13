@@ -2,28 +2,43 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from config import (
-    SESSION, PAPERS, TWEETS_ARXIV, NON_AI_TWEETS, DEFAULT_MIN_FAVES, DEFAULT_WITHIN_TIME
-)
+from config import (SESSION, PAPERS, TWEETS_ARXIV, NON_AI_TWEETS,
+                    DEFAULT_MIN_FAVES, DEFAULT_WITHIN_TIME)
 from arxiv_fetch import fetch_arxiv_metadata
 from writing_system import categorize, find_entities
 from tweet_utils import (
-    fetch_thread, expand_urls, parse_tweet_time,
+    fetch_thread,
+    expand_urls,
+    parse_tweet_time,
     calculate_tweet_std_scores,
-    print_fetched_tweet, print_tweet_summary,
-    store_non_ai_tweet, get_same_author_tweets,
-    merge_thread_text, collect_thread_urls,
-    build_base_tweet_doc, upsert_tweet, iter_search_tweets,
+    print_fetched_tweet,
+    print_tweet_summary,
+    store_non_ai_tweet,
+    get_same_author_tweets,
+    merge_thread_text,
+    collect_thread_urls,
+    build_base_tweet_doc,
+    upsert_tweet,
+    iter_search_tweets,
 )
 
 # ── Config ────────────────────────────────────
 
 MIN_FAVES = DEFAULT_MIN_FAVES
 WITHIN_TIME = DEFAULT_WITHIN_TIME
+CATEGORIZE = False  # Set to False to skip categorization + entity extraction
 
 ACCEPTED_CATEGORIES = {
-    "cs.hc", "eess.iv", "cs.ai", "stat.ml", "cs.lg", "cs.ma",
-    "cs.cv", "cs.cl", "cs.ro", "eess.as",
+    "cs.hc",
+    "eess.iv",
+    "cs.ai",
+    "stat.ml",
+    "cs.lg",
+    "cs.ma",
+    "cs.cv",
+    "cs.cl",
+    "cs.ro",
+    "eess.as",
 }
 
 ARXIV_RE = re.compile(r"(\d{4}\.\d{4,5})")
@@ -78,18 +93,20 @@ def _extract_entities(title: str, summary: str, arxiv_url: str = None) -> dict:
 
 
 def _update_metrics_in_papers_db(arxiv_id, like_count, reply_count,
-                                  retweet_count, tweet_id, tweet_url):
+                                 retweet_count, tweet_id, tweet_url):
     try:
         PAPERS.update_one(
             {"arxiv_id": arxiv_id},
-            {"$set": {
-                "like_count": like_count,
-                "reply_count": reply_count,
-                "retweet_count": retweet_count,
-                "tweet_id": str(tweet_id),
-                "tweet_url": tweet_url,
-                "metrics_updated_at": datetime.utcnow(),
-            }},
+            {
+                "$set": {
+                    "like_count": like_count,
+                    "reply_count": reply_count,
+                    "retweet_count": retweet_count,
+                    "tweet_id": str(tweet_id),
+                    "tweet_url": tweet_url,
+                    "metrics_updated_at": datetime.utcnow(),
+                }
+            },
             upsert=True,
         )
     except Exception as e:
@@ -105,16 +122,42 @@ def validate_and_backfill():
     print("🔍 VALIDATING EXISTING ARXIV ENTRIES")
     print("=" * 60)
 
-    query = {"$or": [
-        {"arxiv_details": {"$exists": False}},
-        {"arxiv_details": None},
-        {"ai_categories.regular_categories": {"$exists": False}},
-        {"ai_categories.regular_categories": []},
-        {"ai_categories.advanced_categories": {"$exists": False}},
-        {"ai_categories.advanced_categories": []},
-        {"key_entities": {"$exists": False}},
-        {"key_entities": None},
-    ]}
+    query = {
+        "$or": [
+            {
+                "arxiv_details": {
+                    "$exists": False
+                }
+            },
+            {
+                "arxiv_details": None
+            },
+            {
+                "regular_categories": {
+                    "$exists": False
+                }
+            },
+            {
+                "regular_categories": []
+            },
+            {
+                "advanced_categories": {
+                    "$exists": False
+                }
+            },
+            {
+                "advanced_categories": []
+            },
+            {
+                "key_entities": {
+                    "$exists": False
+                }
+            },
+            {
+                "key_entities": None
+            },
+        ]
+    }
 
     docs = list(TWEETS_ARXIV.find(query))
     if not docs:
@@ -135,32 +178,33 @@ def validate_and_backfill():
             print(f"  ❌ Could not fetch metadata, skipping")
             continue
 
-        needs_work = (
-            not doc.get("ai_categories", {}).get("regular_categories")
-            or not doc.get("ai_categories", {}).get("advanced_categories")
-            or not doc.get("key_entities")
-        )
+        needs_work = (not doc.get("regular_categories")
+                      or not doc.get("advanced_categories")
+                      or not doc.get("key_entities"))
         if not needs_work:
             continue
 
-        cat_result = _categorize_paper(
-            meta.get("title", ""), meta.get("summary", ""), doc.get("arxiv_url"))
-        ent_result = _extract_entities(
-            meta.get("title", ""), meta.get("summary", ""), doc.get("arxiv_url"))
+        cat_result = _categorize_paper(meta.get("title", ""),
+                                       meta.get("summary", ""),
+                                       doc.get("arxiv_url"))
+        ent_result = _extract_entities(meta.get("title", ""),
+                                       meta.get("summary", ""),
+                                       doc.get("arxiv_url"))
 
         tweet_text = doc.get("text", "")
         full_text = f"{tweet_text}\n\n---\n\nArXiv Abstract:\n{meta.get('summary', '')}"
 
-        TWEETS_ARXIV.update_one({"tweet_id": doc["tweet_id"]}, {"$set": {
-            "arxiv_details": meta,
-            "ai_categories": {
+        TWEETS_ARXIV.update_one({"tweet_id": doc["tweet_id"]}, {
+            "$set": {
+                "arxiv_details": meta,
                 "regular_categories": cat_result.get("regular_categories", []),
-                "advanced_categories": cat_result.get("advanced_categories", []),
-            },
-            "key_entities": ent_result.get("key_entities", []),
-            "text": full_text,
-            "updated_at": datetime.utcnow(),
-        }})
+                "advanced_categories": cat_result.get("advanced_categories",
+                                                      []),
+                "key_entities": ent_result.get("key_entities", []),
+                "text": full_text,
+                "updated_at": datetime.utcnow(),
+            }
+        })
 
     print(f"✅ Backfill complete — fixed {len(docs)} entries\n")
 
@@ -178,7 +222,9 @@ def run():
     )
     inserted = skipped = already = 0
 
-    print(f"\n🔎 arXiv scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME})")
+    print(
+        f"\n🔎 arXiv scraper (min_faves={MIN_FAVES}, within={WITHIN_TIME}, categorize={CATEGORIZE})"
+    )
 
     for tweet in iter_search_tweets(SESSION, base_url):
         user = (tweet.get("user") or {}).get("screen_name", "")
@@ -213,23 +259,32 @@ def run():
         # ── Fetch metadata ──
         meta = fetch_arxiv_metadata(arxiv_id)
         if not meta:
-            store_non_ai_tweet(NON_AI_TWEETS, tid, user, "X arxiv",
-                               {"arxiv_id": arxiv_id, "reason": "no_metadata"})
+            store_non_ai_tweet(NON_AI_TWEETS, tid, user, "X arxiv", {
+                "arxiv_id": arxiv_id,
+                "reason": "no_metadata"
+            })
             skipped += 1
             continue
 
         # ── Category relevance (fast pre-filter) ──
         if not _category_is_relevant(meta.get("categories", [])):
-            store_non_ai_tweet(NON_AI_TWEETS, tid, user, "X arxiv",
-                               {"arxiv_id": arxiv_id, "reason": "non_ai_content"})
+            store_non_ai_tweet(NON_AI_TWEETS, tid, user, "X arxiv", {
+                "arxiv_id": arxiv_id,
+                "reason": "non_ai_content"
+            })
             skipped += 1
             continue
 
-        # ── Categorize + entities ──
-        cat_result = _categorize_paper(
-            meta.get("title", ""), meta.get("summary", ""), arxiv_url)
-        ent_result = _extract_entities(
-            meta.get("title", ""), meta.get("summary", ""), arxiv_url)
+        # ── Categorize + entities (optional) ──
+        if CATEGORIZE:
+            cat_result = _categorize_paper(meta.get("title", ""),
+                                           meta.get("summary", ""), arxiv_url)
+            ent_result = _extract_entities(meta.get("title", ""),
+                                           meta.get("summary", ""), arxiv_url)
+        else:
+            cat_result = {"regular_categories": [], "advanced_categories": []}
+            ent_result = {"key_entities": []}
+            print("   ⏭️ Categorization & entity extraction skipped")
 
         full_text = f"{text}\n\n---\n\nArXiv Abstract:\n{meta.get('summary', '')}"
 
@@ -242,7 +297,8 @@ def run():
             root.get("bookmark_count") or 0, TWEETS_ARXIV)
 
         tweet_doc = build_base_tweet_doc(
-            root, base_tweets,
+            root,
+            base_tweets,
             text=full_text,
             tweet_type="arxiv",
             source="X arxiv",
@@ -252,21 +308,22 @@ def run():
                 "arxiv_id": arxiv_id,
                 "arxiv_url": arxiv_url,
                 "arxiv_details": meta,
-                "ai_categories": {
-                    "regular_categories": cat_result.get("regular_categories", []),
-                    "advanced_categories": cat_result.get("advanced_categories", []),
-                },
+                "regular_categories": cat_result.get("regular_categories", []),
+                "advanced_categories": cat_result.get("advanced_categories",
+                                                      []),
                 "key_entities": ent_result.get("key_entities", []),
             },
         )
 
         if upsert_tweet(TWEETS_ARXIV, tweet_doc):
             inserted += 1
-            print_tweet_summary(user, like_count, tweet_doc["tweet_url"], tweet_time)
+            print_tweet_summary(user, like_count, tweet_doc["tweet_url"],
+                                tweet_time)
 
         _update_metrics_in_papers_db(
-            arxiv_id, like_count, root.get("reply_count", 0),
-            retweet_count, root_id,
-            f"https://twitter.com/{user}/status/{root_id}")
+            arxiv_id, like_count, root.get("reply_count", 0), retweet_count,
+            root_id, f"https://twitter.com/{user}/status/{root_id}")
 
-    print(f"\n✅ arXiv done — inserted: {inserted}, skipped: {skipped}, already: {already}")
+    print(
+        f"\n✅ arXiv done — inserted: {inserted}, skipped: {skipped}, already: {already}"
+    )
